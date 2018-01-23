@@ -1,0 +1,5 @@
+APP_KEY = ''
+APP_SECRET = ''
+REDIRECT_URI = 'http://127.0.0.1/'
+USER_NAME = ''
+PASSWORD = ''
