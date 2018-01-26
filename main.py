@@ -17,6 +17,7 @@ import json
 from collections import OrderedDict
 import hashlib
 from datetime import datetime
+import time
 
 logging.basicConfig(level=logging.WARNING,
                     format='%(asctime)s %(filename)s[line:%(lineno)d] [%(levelname)s] %(message)s',
@@ -40,6 +41,7 @@ class WorkingData:
 
     def __init__(self):
         self.queue_to_work = queue.Queue()  # 参考数据格式：{'pagename': '平山智', 'pageid': 1080, 'old': '1h', 'modify': ''}
+        self.post_queue = queue.Queue()
         if os.path.exists('least_data'):
             with open('least_data', 'rb') as file:
                 self.least_data = pickle.load(file)
@@ -160,7 +162,7 @@ def to_weibo_text(name: str, changes: list, url: str) -> str:
             result += area_to_str(add_area, del_area)
 
     text = name + '：' + result
-    text = re.sub('\n', '|', text)
+    text = re.sub('\n', '|', text.strip())
     if len(text) < 130:
         return text + url
     else:
@@ -193,7 +195,7 @@ def post_weibo(text, pic):
         weibo_bot = Client(APP_KEY, APP_SECRET, REDIRECT_URI, username=USER_NAME, password=PASSWORD)
         with open(pic, 'rb') as img:
             weibo_bot.post('statuses/share', status=text, pic=img)
-        print('微博已发送')
+        # print('微博已发送')
     except Exception as e:
         if e.args[0] != '20016 update weibo too fast!':
             logging.exception('发送微博失败:')
@@ -223,7 +225,7 @@ def update_urls_to_push(working_data: WorkingData):
             if len(new_least) <= 3:
                 md5 = get_md5_of_diff(pageid=new_update['pageid'])
                 new_least[new_update['pageid']] = md5
-            if update_time > 5 * time_ratio['h']:  # 只获取5h内的数据
+            if update_time > 3 * time_ratio['h']:  # 只获取3h内的数据
                 end_flag = True
                 if len(new_least) < 3:
                     continue
@@ -244,7 +246,17 @@ def update_urls_to_push(working_data: WorkingData):
             break
 
 
-def post_task(task_data, working_data):
+def weibo_post_task(working_data: WorkingData):
+    if working_data.post_queue.empty():
+        return
+    while not working_data.post_queue.empty():
+        weibo = working_data.post_queue.get()
+        post_weibo(weibo['text'], weibo['pic'])
+        time.sleep(5)   # 避免接口频次限制
+    print(str(datetime.now()) + '微博发送完毕')
+
+
+def gene_task(task_data, working_data):
     try:
         url = DIFF_URL_TEMPLET.format(task_data['pageid'])
         diff = get_diff_soup(url)
@@ -255,7 +267,10 @@ def post_task(task_data, working_data):
         pic_name = dt.strftime('%Y-%m-%d_%H-%M-%S-%f') + '.jpg'
         pic = os.path.join('.', 'pics', pic_name)
         make_diff_pic(pic, diff, name)
-        post_weibo(text, pic)
+        weibo = {'text': text,
+                 'pic': pic}
+        working_data.post_queue.put(weibo)
+        # post_weibo(text, pic)
     except Exception as e:
         working_data.queue_to_work.put(task_data)
         raise e
@@ -267,8 +282,10 @@ def tasks(working_data: WorkingData):
         update_urls_to_push(working_data)
         while not working_data.queue_to_work.empty():
             task_data = working_data.queue_to_work.get()
-            t = threading.Thread(target=post_task, args=(task_data, working_data))
-            t.start()
+            # t = threading.Thread(target=gene_task, args=(task_data, working_data))
+            # t.start()
+            gene_task(task_data, working_data)
+        weibo_post_task(working_data)
     except Exception as e:
         logging.exception('运行错误')
         pass
@@ -277,7 +294,7 @@ def tasks(working_data: WorkingData):
 def tasks_run():
     working_data = WorkingData()
     scheduler = BlockingScheduler()
-    scheduler.add_job(tasks, 'cron', args=[working_data], hour='0-23')
+    scheduler.add_job(tasks, 'cron', args=[working_data], hour='0-23', minute='22')
     scheduler.start()
 
 
