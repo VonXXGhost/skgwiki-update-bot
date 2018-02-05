@@ -11,7 +11,6 @@ import logging
 from retrying import retry
 import queue
 from apscheduler.schedulers.blocking import BlockingScheduler
-import threading
 import pickle
 import json
 from collections import OrderedDict
@@ -27,6 +26,7 @@ logging.basicConfig(level=logging.WARNING,
 
 UPDATE_LIST_URL = 'https://www18.atwiki.jp/_ajax/setplugin/sakuga'
 DIFF_URL_TEMPLET = 'https://www18.atwiki.jp/sakuga/diffx/{0}.html'
+g_scheduler = None
 
 
 class ChangedContent:
@@ -188,8 +188,8 @@ def make_diff_pic(filepath, diff, name):
         raise e
 
 
-@retry(stop_max_delay=600000,
-       wait_fixed=15000)
+@retry(stop_max_attempt_number=5,
+       wait_fixed=30000)
 def post_weibo(text, pic):
     try:
         weibo_bot = Client(APP_KEY, APP_SECRET, REDIRECT_URI, username=USER_NAME, password=PASSWORD)
@@ -199,6 +199,12 @@ def post_weibo(text, pic):
     except Exception as e:
         if e.args[0] != '20016 update weibo too fast!':
             logging.exception('发送微博失败:')
+        if '10023' in e.args[0]:
+            g_scheduler.pause()
+            logging.warning('任务暂停')
+            time.sleep(60 * 60 * 2)  # 触发接口频次限制时沉睡两小时
+            g_scheduler.resume()
+            logging.info('任务继续运行')
         raise e
 
 
@@ -225,7 +231,7 @@ def update_urls_to_push(working_data: WorkingData):
             if len(new_least) <= 3:
                 md5 = get_md5_of_diff(pageid=new_update['pageid'])
                 new_least[new_update['pageid']] = md5
-            if update_time > 3 * time_ratio['h']:  # 只获取3h内的数据
+            if update_time > 5 * time_ratio['h']:  # 只获取5h内的数据
                 end_flag = True
                 if len(new_least) < 3:
                     continue
@@ -246,13 +252,23 @@ def update_urls_to_push(working_data: WorkingData):
             break
 
 
+def pics_clear_task():
+    pic_path = os.path.join('.', 'pics')
+    try:
+        for root, dirs, names in os.walk(pic_path):
+            for file in names:
+                os.remove(file)
+    except Exception as e:
+        logging.exception(e)
+
+
 def weibo_post_task(working_data: WorkingData):
     if working_data.post_queue.empty():
         return
     while not working_data.post_queue.empty():
         weibo = working_data.post_queue.get()
         post_weibo(weibo['text'], weibo['pic'])
-        time.sleep(5)   # 避免接口频次限制
+        time.sleep(20)  # 避免接口频次限制
     print(str(datetime.now()) + '微博发送完毕')
 
 
@@ -286,15 +302,16 @@ def tasks(working_data: WorkingData):
             # t.start()
             gene_task(task_data, working_data)
         weibo_post_task(working_data)
-    except Exception as e:
+    except:
         logging.exception('运行错误')
-        pass
 
 
 def tasks_run():
     working_data = WorkingData()
     scheduler = BlockingScheduler()
-    scheduler.add_job(tasks, 'cron', args=[working_data], hour='0-23', minute='22')
+    global g_scheduler
+    g_scheduler = scheduler.add_job(tasks, 'interval', args=[working_data], hours=1, minutes=2)
+    scheduler.add_job(pics_clear_task, 'cron', hour=4, day_of_week=3)
     scheduler.start()
 
 
