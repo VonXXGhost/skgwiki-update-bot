@@ -128,8 +128,7 @@ def to_weibo_text(name: str, changes: list, url: str) -> str:
     prue_changes = []
     for changed in changes:
         t = re.sub(r'<[^<>]*>', '', str(changed.text)).strip()
-        if t != '':
-            prue_changes.append(ChangedContent(t, changed.index, changed.type))
+        prue_changes.append(ChangedContent(t, changed.index, changed.type))
     del_area = []
     add_area = []
     flags = ''
